@@ -36,6 +36,7 @@ import {
   fmt$, fmtPeriodLabel, fmtDate,
   calcAccumDepr, getCurrentFiscalPeriod,
 } from '../lib/calculations';
+import { buildFaReconSnapshot, downloadReconSnapshot } from '../lib/reconSnapshot';
 
 const TOLERANCE = 1.00;
 
@@ -174,7 +175,7 @@ export default function ReconciliationPage() {
     try {
       const [assetsData, catsRes, fpRes, runsRes] = await Promise.all([
         fetchAll('v_assets_current'),
-        supabase.from('categories').select('id, name, cost_account, accum_account').order('sort_order'),
+        supabase.from('categories').select('id, name, cost_account, accum_account, sort_order').order('sort_order'),
         supabase.from('fiscal_periods').select('fiscal_year, period, start_date, end_date').order('fiscal_year').order('period'),
         supabase.from('depreciation_runs').select('fiscal_year, period').order('fiscal_year', { ascending: false }).order('period', { ascending: false }),
       ]);
@@ -450,6 +451,38 @@ export default function ReconciliationPage() {
     : false;
 
   // ============================================================
+  // FA → Recon snapshot (JSON) — the sub-ledger handoff for the RRF Recon app.
+  // Book-side only: does NOT require a QB upload. Uses the SAME figures as the
+  // book preview / book column (gross by cost_account, pooled accum via
+  // calcAccumDepr against the selected period), then flips the accum sign to
+  // the BS contra convention on the way out. No fabricated numbers.
+  // ============================================================
+  function downloadSnapshot() {
+    try {
+      if (!assets || !categories || !fiscalPeriods || !selPeriod) return;
+      const endISO = fiscalPeriods.find(p =>
+        p.fiscal_year === selPeriod.fiscal_year && p.period === selPeriod.period
+      )?.end_date;
+      if (!endISO) {
+        showToast('Selected period has no end_date defined in fiscal_periods.');
+        return;
+      }
+      const snap = buildFaReconSnapshot({
+        assets, categories, fiscalPeriods, selPeriod, periodEndISO: endISO,
+      });
+      const fname = downloadReconSnapshot(snap);
+      if (snap.unmatched.cost !== 0) {
+        showToast(`Downloaded ${fname} — ⚠ ${snap.unmatched.asset_count} asset(s) (${fmt$(snap.unmatched.cost)}) have no GL cost_account and were excluded.`);
+      } else {
+        showToast(`Downloaded ${fname}`);
+      }
+    } catch (e) {
+      console.error(e);
+      showToast(`Snapshot export failed: ${e.message || e}`);
+    }
+  }
+
+  // ============================================================
   // Excel export
   // ============================================================
   function exportRecon() {
@@ -602,6 +635,13 @@ export default function ReconciliationPage() {
         <span className="text-[11px] text-gray-400 ml-2">
           ✓ = saved depreciation run
         </span>
+        <button
+          onClick={downloadSnapshot}
+          title="Download the FA book balances as a JSON snapshot for the RRF Recon app (book-side only; no QB upload needed)"
+          className="ml-auto px-3 py-1.5 text-xs font-medium bg-slate-700 text-white rounded hover:bg-slate-800 flex-shrink-0"
+        >
+          ↓ Download recon snapshot (JSON)
+        </button>
       </div>
 
       {/* Upload zone */}
